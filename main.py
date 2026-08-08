@@ -6,7 +6,9 @@ and regenerate their candlestick charts. See README.md for usage details.
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
+import tempfile
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -16,14 +18,64 @@ matplotlib.use("Agg")
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import pandas as pd
-import yfinance as yf
 from matplotlib.patches import Rectangle
 
 ROOT_DIR = Path(__file__).resolve().parent
 SAVE_DIR = ROOT_DIR / "save"
 PICS_DIR = ROOT_DIR / "pics"
+WORKER_SCRIPT = ROOT_DIR / "_yf_worker.py"
 
 DEFAULT_TICKERS = ["AAPL", "MSFT"]
+
+# Full supervision list (legacy tickers from yahoo_finance_api.py's
+# mySupervisionList). To process the full list instead of DEFAULT_TICKERS,
+# comment out the DEFAULT_TICKERS line above and uncomment the two lines
+# below (or just run: python main.py 2338.HK AAG.DE BIDU ... one-off).
+SUPERVISION_LIST = [
+    "2338.HK", "AAG.DE", "BIDU", "BMW.DE", "BAYN.DE", "COK.DE", "CSCO",
+    "EVD.DE", "FEV.DE", "HAG.F", "IRBT", "JD", "MTX.DE", "N7G.DE", "PRLB",
+    "SHL.DE", "SIX2.DE", "SLM", "TCOM", "TUI1.DE", "VOW3.DE",
+]
+ DEFAULT_TICKERS = SUPERVISION_LIST
+
+# _yf_worker.py talks directly to Yahoo Finance's chart API over plain HTTP,
+# bypassing yfinance's curl_cffi backend (which has been observed to crash
+# natively in some sandboxed/virtualized environments). It still runs in its
+# own subprocess so a crash or hang there can never affect main.py itself,
+# and a hard timeout guarantees a single bad ticker can't block the rest of
+# the run.
+DOWNLOAD_TIMEOUT_SECONDS = 30
+
+
+def download_ticker_data(ticker: str, start: str, end: str, timeout: float = DOWNLOAD_TIMEOUT_SECONDS):
+    """Download one ticker's history from Yahoo Finance in an isolated
+    subprocess with a hard timeout.
+
+    Returns (data, error). `error` is set (data is None) if the subprocess
+    timed out, crashed, or failed; otherwise data is the downloaded
+    DataFrame (possibly empty if there was simply nothing new to fetch).
+    """
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        output_path = Path(tmp_dir) / "download.csv"
+        cmd = [sys.executable, str(WORKER_SCRIPT), ticker, start, end, str(output_path)]
+        try:
+            result = subprocess.run(cmd, timeout=timeout, capture_output=True, text=True)
+        except subprocess.TimeoutExpired:
+            return None, TimeoutError(f"download for {ticker} did not respond within {timeout:.0f}s")
+
+        if result.returncode != 0:
+            message = result.stderr.strip() or f"worker exited with code {result.returncode}"
+            return None, RuntimeError(message)
+
+        if not output_path.exists() or output_path.stat().st_size == 0:
+            return pd.DataFrame(), None
+
+        try:
+            data = pd.read_csv(output_path, index_col=0, parse_dates=True)
+        except Exception as exc:  # noqa: BLE001 - surface any parse error to the caller
+            return None, exc
+
+        return data, None
 
 
 def ensure_directories(today: date) -> Path:
@@ -100,10 +152,9 @@ def update_ticker_history(ticker: str, existing: pd.DataFrame, today: date) -> p
     if start >= end:
         return existing
 
-    try:
-        raw = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
-    except Exception as exc:
-        print(f"Download failed for {ticker}: {exc}")
+    raw, error = download_ticker_data(ticker, start, end)
+    if error is not None:
+        print(f"Download failed for {ticker}: {error}")
         return existing
 
     if raw is None or raw.empty:
