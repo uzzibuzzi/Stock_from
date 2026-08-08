@@ -1,0 +1,9 @@
+C:\KBData\SVN_home\trunk\SW_app\Stock_from_xls\Stock_from_xls\bin\Debug\Stock_from_xls.exe.config
+C:\KBData\SVN_home\trunk\SW_app\Stock_from_xls\Stock_from_xls\obj\Debug\Stock_from_xls.csprojResolveAssemblyReference.cache
+C:\KBData\SVN_home\trunk\SW_app\Stock_from_xls\Stock_from_xls\obj\Debug\Stock_from_xls.Form1.resources
+C:\KBData\SVN_home\trunk\SW_app\Stock_from_xls\Stock_from_xls\obj\Debug\Stock_from_xls.Properties.Resources.resources
+C:\KBData\SVN_home\trunk\SW_app\Stock_from_xls\Stock_from_xls\obj\Debug\Stock_from_xls.csproj.GenerateResource.Cache
+C:\KBData\SVN_home\trunk\SW_app\Stock_from_xls\Stock_from_xls\bin\Debug\Stock_from_xls.exe
+C:\KBData\SVN_home\trunk\SW_app\Stock_from_xls\Stock_from_xls\bin\Debug\Stock_from_xls.pdb
+C:\KBData\SVN_home\trunk\SW_app\Stock_from_xls\Stock_from_xls\obj\Debug\Stock_from_xls.exe
+C:\KBData\SVN_home\trunk\SW_app\Stock_from_xls\Stock_from_xls\obj\Debug\Stock_from_xls.pdb
