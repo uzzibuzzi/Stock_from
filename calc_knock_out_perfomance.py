@@ -3,6 +3,11 @@
 Created on Mon Jul 26 11:43:20 2021
 
 @author: vollmera
+
+Standalone calculator for a knock-out certificate's option price, stop-loss
+underlying/option limits, and win/risk-reward percentages given a manually
+set stock price and target value. Unrelated to the Yahoo Finance download
+workflow in main.py; edit the constants below and re-run to get new numbers.
 """
 StockPrice=155.2
 target_value=170

@@ -3,6 +3,11 @@
 Created on Thu Jan 14 11:39:22 2021
 
 @author: vollmera
+
+Legacy exploratory script: downloads a single ticker (AAPL) and renders a
+basic candlestick + 100-day moving-average chart. Superseded by main.py,
+which adds incremental downloads, CSV persistence, and limit indicators.
+Kept here for reference only.
 """
 
 

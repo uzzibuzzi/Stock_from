@@ -1,3 +1,9 @@
+"""Legacy exploratory script: downloads history for a fixed watch list and
+renders one candlestick chart per ticker, plus a summary CSV (Result_<date>.csv).
+
+Superseded by main.py, which adds incremental downloads, CSV persistence in
+save/, and moving-average limit lines. Kept here for reference only.
+"""
 import yfinance as yf
 import os
 

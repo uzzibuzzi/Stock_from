@@ -1,3 +1,8 @@
+"""Incremental Yahoo Finance download, CSV persistence, and chart workflow.
+
+Run this module directly to update local CSV history for a list of tickers
+and regenerate their candlestick charts. See README.md for usage details.
+"""
 from __future__ import annotations
 
 import re
@@ -22,6 +27,7 @@ DEFAULT_TICKERS = ["AAPL", "MSFT"]
 
 
 def ensure_directories(today: date) -> Path:
+    """Create the save/pics folders (plus a dated pics subfolder) if missing."""
     SAVE_DIR.mkdir(exist_ok=True)
     PICS_DIR.mkdir(exist_ok=True)
     run_folder = PICS_DIR / str(today)
@@ -30,10 +36,12 @@ def ensure_directories(today: date) -> Path:
 
 
 def safe_filename(value: str) -> str:
+    """Sanitize a ticker symbol so it can be used as a file name."""
     return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._") or "ticker"
 
 
 def load_existing_history(path: Path) -> pd.DataFrame:
+    """Load a ticker's local CSV history, or an empty DataFrame if absent."""
     if not path.exists() or path.stat().st_size == 0:
         return pd.DataFrame()
 
@@ -56,6 +64,7 @@ def load_existing_history(path: Path) -> pd.DataFrame:
 
 
 def normalize_downloaded(raw: pd.DataFrame) -> pd.DataFrame:
+    """Normalize a raw yfinance download into the standard OHLCV column set."""
     if raw is None or raw.empty:
         return pd.DataFrame()
 
@@ -78,6 +87,9 @@ def normalize_downloaded(raw: pd.DataFrame) -> pd.DataFrame:
 
 
 def update_ticker_history(ticker: str, existing: pd.DataFrame, today: date) -> pd.DataFrame:
+    """Download only the rows missing since the last stored date and merge them
+    into `existing`, de-duplicating by date (newest download wins).
+    """
     if existing.empty:
         start = "2020-01-01"
     else:
@@ -113,6 +125,7 @@ def update_ticker_history(ticker: str, existing: pd.DataFrame, today: date) -> p
 
 
 def fast_analyse(series: pd.Series) -> str:
+    """Return a +/- string per rolling-average window indicating trend direction."""
     windows = [2, 5, 15, 25, 50, 200]
     output = []
     for window in windows:
@@ -122,6 +135,9 @@ def fast_analyse(series: pd.Series) -> str:
 
 
 def plot_ticker(data: pd.DataFrame, ticker: str, output_path: Path) -> None:
+    """Render a candlestick chart with 20/100-day MAs, limit lines, volume,
+    and a trend indicator in the title, and save it to `output_path`.
+    """
     if data.empty:
         return
 
@@ -189,6 +205,7 @@ def plot_ticker(data: pd.DataFrame, ticker: str, output_path: Path) -> None:
 
 
 def process_ticker(ticker: str, run_folder: Path, today: date) -> None:
+    """Update local history for one ticker, persist it, and render its chart."""
     csv_path = SAVE_DIR / f"{safe_filename(ticker)}.csv"
     existing = load_existing_history(csv_path)
     before_rows = len(existing)
@@ -211,6 +228,7 @@ def process_ticker(ticker: str, run_folder: Path, today: date) -> None:
 
 
 def main() -> int:
+    """Entry point: process CLI-provided tickers, or DEFAULT_TICKERS if none given."""
     today = date.today()
     run_folder = ensure_directories(today)
 
