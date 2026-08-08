@@ -36,7 +36,7 @@ SUPERVISION_LIST = [
     "EVD.DE", "FEV.DE", "HAG.F", "IRBT", "JD", "MTX.DE", "N7G.DE", "PRLB",
     "SHL.DE", "SIX2.DE", "SLM", "TCOM", "TUI1.DE", "VOW3.DE",
 ]
- DEFAULT_TICKERS = SUPERVISION_LIST
+DEFAULT_TICKERS = SUPERVISION_LIST
 
 # _yf_worker.py talks directly to Yahoo Finance's chart API over plain HTTP,
 # bypassing yfinance's curl_cffi backend (which has been observed to crash
