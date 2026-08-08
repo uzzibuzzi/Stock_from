@@ -5,18 +5,21 @@ and regenerate their candlestick charts. See README.md for usage details.
 """
 from __future__ import annotations
 
+import argparse
 import re
 import subprocess
 import sys
 import tempfile
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Optional, Tuple
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
+import openpyxl
 import pandas as pd
 from matplotlib.patches import Rectangle
 
@@ -37,6 +40,61 @@ SUPERVISION_LIST = [
     "SHL.DE", "SIX2.DE", "SLM", "TCOM", "TUI1.DE", "VOW3.DE",
 ]
 DEFAULT_TICKERS = SUPERVISION_LIST
+
+# Best-effort mapping from an Aktienfinder.net "Land" (country) column to the
+# Yahoo Finance exchange suffix, used by to_yahoo_ticker(). Not guaranteed to
+# be correct for every exchange/listing - verify unfamiliar tickers manually.
+LAND_TO_SUFFIX = {
+    "usa": "",
+    "deutschland": ".DE",
+    "kanada": ".TO",
+    "frankreich": ".PA",
+    "niederlande": ".AS",
+    "irland": ".DE",
+    "daenemark": ".CO",
+    "dänemark": ".CO",
+    "hong kong": ".HK",
+    "china": ".HK",
+    "schweiz": ".SW",
+    "vereinigtes koenigreich": ".L",
+    "vereinigtes königreich": ".L",
+    "grossbritannien": ".L",
+    "großbritannien": ".L",
+    "japan": ".T",
+    "spanien": ".MC",
+    "italien": ".MI",
+    "schweden": ".ST",
+    "norwegen": ".OL",
+    "belgien": ".BR",
+    "oesterreich": ".VI",
+    "österreich": ".VI",
+}
+
+# Expected trading currency per Yahoo Finance suffix, used to sanity-check
+# watchlist buy/sell limits before overlaying them on a chart (Aktienfinder.net
+# sometimes displays prices converted to EUR even for non-EUR listings).
+SUFFIX_CURRENCY = {
+    "": "USD",
+    ".DE": "EUR",
+    ".PA": "EUR",
+    ".AS": "EUR",
+    ".TO": "CAD",
+    ".HK": "HKD",
+    ".CO": "DKK",
+    ".SW": "CHF",
+    ".L": "GBP",
+    ".T": "JPY",
+    ".MC": "EUR",
+    ".MI": "EUR",
+    ".ST": "SEK",
+    ".OL": "NOK",
+    ".BR": "EUR",
+    ".VI": "EUR",
+}
+
+# Column names (case-insensitive) checked in order for the ticker source when
+# importing a watchlist .xlsx file.
+TICKER_COLUMN_CANDIDATES = ["symbol", "ticker", "wkn", "isin"]
 
 # _yf_worker.py talks directly to Yahoo Finance's chart API over plain HTTP,
 # bypassing yfinance's curl_cffi backend (which has been observed to crash
@@ -90,6 +148,122 @@ def ensure_directories(today: date) -> Path:
 def safe_filename(value: str) -> str:
     """Sanitize a ticker symbol so it can be used as a file name."""
     return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("._") or "ticker"
+
+
+def to_yahoo_ticker(symbol: str, land: Optional[str]) -> str:
+    """Best-effort conversion of an Aktienfinder.net symbol + country into a
+    Yahoo Finance ticker (e.g. '02020' + 'Hong Kong' -> '2020.HK',
+    'SAP' + 'Deutschland' -> 'SAP.DE', 'NOVO B' + 'D\u00e4nemark' -> 'NOVO-B.CO').
+    Not guaranteed to be correct for every exchange - verify unfamiliar
+    tickers manually before relying on the downloaded data.
+    """
+    symbol = symbol.strip()
+    if symbol.isdigit():
+        return f"{int(symbol):04d}.HK"
+
+    normalized = symbol.replace(" ", "-")
+    suffix = LAND_TO_SUFFIX.get((land or "").strip().lower(), "")
+    return f"{normalized}{suffix}"
+
+
+def _expected_currency(ticker: str) -> str:
+    """Return the trading currency expected for a Yahoo ticker's exchange suffix."""
+    for suffix, currency in SUFFIX_CURRENCY.items():
+        if suffix and ticker.endswith(suffix):
+            return currency
+    return "USD"
+
+
+def _parse_limit(value: object) -> Tuple[Optional[float], Optional[str]]:
+    """Parse a watchlist limit cell like '133.00 USD' into (133.0, 'USD')."""
+    if value is None:
+        return None, None
+
+    text = str(value).strip()
+    if not text:
+        return None, None
+
+    match = re.match(r"^([\d.,]+)\s*([A-Za-z]{2,4})?$", text)
+    if not match:
+        return None, None
+
+    number_text, currency = match.groups()
+    try:
+        number = float(number_text.replace(",", ""))
+    except ValueError:
+        return None, None
+
+    return number, currency
+
+
+def load_watchlist_from_xlsx(path: str, sheet: object = 0) -> list[dict]:
+    """Load a watchlist from an Aktienfinder.net-style .xlsx export.
+
+    Looks up the ticker from a 'Symbol' column (falling back to 'Ticker',
+    'WKN', or 'ISIN' if present), converts it to a best-effort Yahoo Finance
+    ticker using the 'Land' (country) column via to_yahoo_ticker(), and also
+    extracts the 'Kauf Limit' / 'Verk. Limit' (buy/sell target price)
+    columns if present. Returns a list of dicts, one per watchlist row.
+    """
+    workbook = openpyxl.load_workbook(path, data_only=True, read_only=True)
+    worksheet = workbook.worksheets[sheet] if isinstance(sheet, int) else workbook[sheet]
+
+    rows = worksheet.iter_rows(values_only=True)
+    header = next(rows, None)
+    if header is None:
+        raise ValueError(f"{path}: sheet is empty")
+
+    columns = {str(name).strip().lower(): i for i, name in enumerate(header) if name}
+
+    ticker_col = next((columns[c] for c in TICKER_COLUMN_CANDIDATES if c in columns), None)
+    if ticker_col is None:
+        raise ValueError(
+            f"{path}: no ticker column found (looked for {TICKER_COLUMN_CANDIDATES}); "
+            f"available columns: {list(columns.keys())}"
+        )
+
+    land_col = columns.get("land")
+    isin_col = columns.get("isin")
+    name_col = columns.get("aktie", columns.get("name"))
+    buy_col = columns.get("kauf limit")
+    sell_col = columns.get("verk. limit")
+
+    def cell(row: tuple, col: Optional[int]):
+        return row[col] if col is not None and col < len(row) else None
+
+    entries = []
+    seen: set[str] = set()
+    for row in rows:
+        if row is None:
+            continue
+        raw_symbol = cell(row, ticker_col)
+        if raw_symbol is None or not str(raw_symbol).strip():
+            continue
+
+        land = cell(row, land_col)
+        ticker = to_yahoo_ticker(str(raw_symbol), land)
+        if ticker in seen:
+            continue
+        seen.add(ticker)
+
+        buy_limit, buy_currency = _parse_limit(cell(row, buy_col))
+        sell_limit, sell_currency = _parse_limit(cell(row, sell_col))
+
+        entries.append(
+            {
+                "ticker": ticker,
+                "symbol": str(raw_symbol).strip(),
+                "isin": cell(row, isin_col),
+                "name": cell(row, name_col),
+                "land": land,
+                "buy_limit": buy_limit,
+                "buy_currency": buy_currency,
+                "sell_limit": sell_limit,
+                "sell_currency": sell_currency,
+            }
+        )
+
+    return entries
 
 
 def load_existing_history(path: Path) -> pd.DataFrame:
@@ -185,9 +359,18 @@ def fast_analyse(series: pd.Series) -> str:
     return "".join(output)
 
 
-def plot_ticker(data: pd.DataFrame, ticker: str, output_path: Path) -> None:
+def plot_ticker(
+    data: pd.DataFrame,
+    ticker: str,
+    output_path: Path,
+    watchlist_limit: Optional[Tuple[Optional[float], Optional[float]]] = None,
+) -> None:
     """Render a candlestick chart with 20/100-day MAs, limit lines, volume,
     and a trend indicator in the title, and save it to `output_path`.
+
+    `watchlist_limit`, if given, is an optional (buy_limit, sell_limit) pair
+    from an imported watchlist, drawn as dashed blue/purple lines in addition
+    to the regular green/red 100-day-MA-range limit lines.
     """
     if data.empty:
         return
@@ -239,6 +422,13 @@ def plot_ticker(data: pd.DataFrame, ticker: str, output_path: Path) -> None:
         ax1.axhline(y=upper, color="g", linestyle="-")
         ax1.axhline(y=lower, color="r", linestyle="-")
 
+    if watchlist_limit is not None:
+        buy_limit, sell_limit = watchlist_limit
+        if buy_limit is not None:
+            ax1.axhline(y=buy_limit, color="blue", linestyle="--", linewidth=1.2, label="Kauf Limit")
+        if sell_limit is not None:
+            ax1.axhline(y=sell_limit, color="purple", linestyle="--", linewidth=1.2, label="Verk. Limit")
+
     ax1.set_title(f"{ticker} Trend: {trend}")
     ax1.set_ylabel("Price")
     ax1.legend(loc="upper left")
@@ -259,7 +449,12 @@ def plot_ticker(data: pd.DataFrame, ticker: str, output_path: Path) -> None:
     plt.close(fig)
 
 
-def process_ticker(ticker: str, run_folder: Path, today: date) -> None:
+def process_ticker(
+    ticker: str,
+    run_folder: Path,
+    today: date,
+    watchlist_limit: Optional[Tuple[Optional[float], Optional[float]]] = None,
+) -> None:
     """Update local history for one ticker, persist it, and render its chart."""
     csv_path = SAVE_DIR / f"{safe_filename(ticker)}.csv"
     existing = load_existing_history(csv_path)
@@ -278,22 +473,56 @@ def process_ticker(ticker: str, run_folder: Path, today: date) -> None:
     print(f"{ticker}: stored rows={after_rows}, added={added_rows}")
 
     image_path = run_folder / f"{safe_filename(ticker)}_{today}.png"
-    plot_ticker(combined, ticker, image_path)
+    plot_ticker(combined, ticker, image_path, watchlist_limit=watchlist_limit)
     print(f"{ticker}: chart saved -> {image_path.name}")
 
 
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    """Parse CLI arguments: positional tickers, or --xlsx to import a watchlist."""
+    parser = argparse.ArgumentParser(description="Incremental Yahoo Finance downloader")
+    parser.add_argument("tickers", nargs="*", help="Ticker symbols to process")
+    parser.add_argument(
+        "--xlsx",
+        help="Path to an Aktienfinder.net-style watchlist .xlsx file to import tickers from",
+    )
+    parser.add_argument(
+        "--sheet",
+        default=0,
+        help="Sheet name or 0-based index in the --xlsx file (default: first sheet)",
+    )
+    return parser.parse_args(argv)
+
+
 def main() -> int:
-    """Entry point: process CLI-provided tickers, or DEFAULT_TICKERS if none given."""
+    """Entry point: process CLI-provided tickers, an --xlsx watchlist, or
+    DEFAULT_TICKERS if neither is given.
+    """
     today = date.today()
     run_folder = ensure_directories(today)
 
-    tickers = [t for t in sys.argv[1:] if t.strip()]
-    if not tickers:
+    args = parse_args(sys.argv[1:])
+
+    watchlist_limits: dict[str, Tuple[Optional[float], Optional[float]]] = {}
+    if args.xlsx:
+        sheet = args.sheet
+        if isinstance(sheet, str) and sheet.isdigit():
+            sheet = int(sheet)
+        entries = load_watchlist_from_xlsx(args.xlsx, sheet)
+        tickers = [entry["ticker"] for entry in entries]
+        for entry in entries:
+            expected_currency = _expected_currency(entry["ticker"])
+            buy = entry["buy_limit"] if entry["buy_currency"] in (None, expected_currency) else None
+            sell = entry["sell_limit"] if entry["sell_currency"] in (None, expected_currency) else None
+            if buy is not None or sell is not None:
+                watchlist_limits[entry["ticker"]] = (buy, sell)
+    elif args.tickers:
+        tickers = args.tickers
+    else:
         tickers = DEFAULT_TICKERS
 
     print(f"Processing {len(tickers)} tickers: {', '.join(tickers)}")
     for ticker in tickers:
-        process_ticker(ticker, run_folder, today)
+        process_ticker(ticker, run_folder, today, watchlist_limits.get(ticker))
 
     print("Done.")
     return 0
