@@ -17,3 +17,25 @@ The script in yahoo_finance_api.py was failing because it relied on older plotti
 
 ### Files involved
 - yahoo_finance_api.py
+
+## Main entry-point findings
+
+The project needs one clear entry script (`main.py`) that updates local stock history incrementally and regenerates plots in the existing visual style.
+
+### What should be implemented
+- Read the ticker list and iterate all symbols.
+- Reuse local CSV files from the `save` folder.
+- If a CSV exists, detect the last stored date and download only missing rows until today.
+- Merge, de-duplicate by date, sort, and write back to the same CSV.
+- Save images to the `pics` folder.
+
+### Plot requirements
+- Keep candlestick-like price view.
+- Keep trend-following overlays (20-day and 100-day moving averages).
+- Keep existing limit logic (upper/lower guide lines based on moving-average range).
+- Include trend indicator output in the chart title.
+
+### Test checkpoints
+- First run creates CSV and picture output for selected tickers.
+- Second run only appends missing dates and does not duplicate existing rows.
+- Output pictures include trend overlays and limit guides.

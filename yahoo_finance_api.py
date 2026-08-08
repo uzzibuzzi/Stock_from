@@ -90,11 +90,12 @@ wahtchList=["2338.HK","SW1.F","SLT.DE","ASL.de"]
 #mySupervisionList=wahtchList
 
 try:
-    os.mkdir("pics//"+str(today))
-except OSError:
-    print ("Creation of the directory failed" )
+    os.makedirs(os.path.join("pics", str(today)), exist_ok=True)
+    os.makedirs("save", exist_ok=True)
+except OSError as exc:
+    print("Creation of the directory failed:", exc)
 else:
-    print ("Successfully created the directory " )
+    print("Successfully prepared the output directories")
     
 for i in range(len(mySupervisionList)):   
     stockName,df = get_Data_yahoo(mySupervisionList[i])   

@@ -1,17 +1,3 @@
 
 
-#list is not up to date failures in ['HAG.DE', 'JD', 'TCOM']
-
-
-# todo
-
-#1 make summary mdf
-
-make df for every stock also for training
-
-
-where make limits
-
-think about comments
-
-
+#
