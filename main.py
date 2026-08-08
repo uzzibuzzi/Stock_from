@@ -249,6 +249,10 @@ def plot_ticker(data: pd.DataFrame, ticker: str, output_path: Path) -> None:
     ax2.set_ylabel("Volume / Delta")
     ax2.set_xlabel("Date")
 
+    locator = mdates.AutoDateLocator()
+    ax2.xaxis.set_major_locator(locator)
+    ax2.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+
     fig.autofmt_xdate()
     fig.tight_layout()
     fig.savefig(output_path, dpi=220)

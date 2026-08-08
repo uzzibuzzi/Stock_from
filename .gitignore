@@ -6,3 +6,5 @@ bin/
 obj/
 *.pdb
 *.exe
+*.png
+*.csv
