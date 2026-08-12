@@ -15,6 +15,8 @@ Exits non-zero on failure, with a message printed to stderr.
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -32,6 +34,48 @@ USER_AGENT = (
 )
 
 
+def _http_get(url: str, timeout: float) -> bytes:
+    """Fetch `url` and return the raw response body.
+
+    Tries Python's urllib first. On networks where Python's bundled OpenSSL
+    can't complete the TLS handshake (e.g. corporate TLS-inspection proxies
+    like Zscaler, which surface as an ``[ASN1: NOT_ENOUGH_DATA]`` error),
+    falls back to the system ``curl`` executable, which on Windows uses the
+    native Schannel TLS stack and the OS certificate store.
+    """
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read()
+    except urllib.error.HTTPError:
+        # A real HTTP status error (404, etc.) is meaningful - don't mask it
+        # by retrying with curl.
+        raise
+    except Exception:
+        curl_path = shutil.which("curl")
+        if not curl_path:
+            raise
+        result = subprocess.run(
+            [
+                curl_path,
+                "-s",
+                "-S",
+                "-f",
+                "-m",
+                str(int(timeout)),
+                "-A",
+                USER_AGENT,
+                url,
+            ],
+            capture_output=True,
+            timeout=timeout + 5,
+        )
+        if result.returncode != 0:
+            message = result.stderr.decode(errors="replace").strip() or f"curl exited with {result.returncode}"
+            raise RuntimeError(message)
+        return result.stdout
+
+
 def fetch_chart_data(ticker: str, start: str, end: str, timeout: float = 20.0) -> pd.DataFrame:
     """Fetch daily OHLCV history for `ticker` between `start` and `end`
     (YYYY-MM-DD, end exclusive) directly from Yahoo Finance's chart API.
@@ -46,10 +90,8 @@ def fetch_chart_data(ticker: str, start: str, end: str, timeout: float = 20.0) -
         "includeAdjustedClose": "true",
     }
     url = f"{CHART_API_URL.format(symbol=urllib.parse.quote(ticker))}?{urllib.parse.urlencode(params)}"
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
 
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        payload = json.loads(response.read())
+    payload = json.loads(_http_get(url, timeout))
 
     chart = payload.get("chart", {})
     if chart.get("error"):

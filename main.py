@@ -266,13 +266,46 @@ def load_watchlist_from_xlsx(path: str, sheet: object = 0) -> list[dict]:
     return entries
 
 
+# Canonical OHLCV column names, keyed by their lower-case form. Used to
+# normalize legacy CSVs that stored lower-case column headers.
+_CANONICAL_COLUMNS = {
+    "date": "Date",
+    "open": "Open",
+    "high": "High",
+    "low": "Low",
+    "close": "Close",
+    "adj close": "Adj Close",
+    "volume": "Volume",
+}
+
+
+def _parse_date_column(series: pd.Series) -> pd.Series:
+    """Parse a CSV 'Date' column that may hold ISO strings *or* legacy numeric
+    day-numbers (matplotlib/epoch ordinals like 18292.0 written by older
+    versions of this project). Returns a datetime series with unparseable
+    values as NaT.
+    """
+    # Legacy format stored dates as plain numbers (days since the Unix epoch),
+    # which pandas would otherwise mis-read as a calendar year (e.g. 18292).
+    numeric = pd.to_numeric(series, errors="coerce")
+    if numeric.notna().all():
+        return pd.to_datetime(numeric, unit="D", origin="unix", errors="coerce")
+
+    return pd.to_datetime(series, errors="coerce")
+
+
 def load_existing_history(path: Path) -> pd.DataFrame:
-    """Load a ticker's local CSV history, or an empty DataFrame if absent."""
+    """Load a ticker's local CSV history, or an empty DataFrame if absent.
+
+    Handles both the current schema (Date, Open, High, Low, Close, Adj Close,
+    Volume with ISO dates) and legacy CSVs that used lower-case headers, a
+    leading unnamed index column, and numeric day-number dates.
+    """
     if not path.exists() or path.stat().st_size == 0:
         return pd.DataFrame()
 
     try:
-        existing = pd.read_csv(path, parse_dates=["Date"])
+        existing = pd.read_csv(path)
     except Exception as exc:
         print(f"Could not read existing CSV {path.name}: {exc}")
         return pd.DataFrame()
@@ -280,7 +313,26 @@ def load_existing_history(path: Path) -> pd.DataFrame:
     if existing.empty:
         return pd.DataFrame()
 
-    existing["Date"] = pd.to_datetime(existing["Date"])
+    # Normalize headers to canonical names (legacy files used lower-case).
+    existing = existing.rename(
+        columns={col: _CANONICAL_COLUMNS.get(str(col).strip().lower(), col) for col in existing.columns}
+    )
+
+    # Drop stray columns from older saves (e.g. a leading unnamed index column
+    # that could resurface as "Unnamed: 0").
+    keep = [c for c in ["Date", "Open", "High", "Low", "Close", "Adj Close", "Volume"] if c in existing.columns]
+    existing = existing[keep]
+
+    if "Date" not in existing.columns:
+        print(f"Could not read existing CSV {path.name}: no 'Date' column; ignoring stored history")
+        return pd.DataFrame()
+
+    existing["Date"] = _parse_date_column(existing["Date"])
+    existing = existing.dropna(subset=["Date"])
+    if existing.empty:
+        print(f"Could not parse any dates in {path.name}; ignoring stored history")
+        return pd.DataFrame()
+
     existing = existing.set_index("Date").sort_index()
 
     if "Adj Close" not in existing.columns and "Close" in existing.columns:
@@ -433,7 +485,8 @@ def plot_ticker(
     ax1.set_ylabel("Price")
     ax1.legend(loc="upper left")
 
-    ax2.fill_between(dates_num, view["Volume"].values, 0, color="gray", alpha=0.4)
+    if "Volume" in view.columns:
+        ax2.fill_between(dates_num, view["Volume"].values, 0, color="gray", alpha=0.4)
     dx = view["Adj Close"] - ma100.rolling(window=50).mean()
     ax2.plot(dates_num, dx.values, color="black", linewidth=1)
     ax2.set_ylabel("Volume / Delta")
@@ -522,7 +575,10 @@ def main() -> int:
 
     print(f"Processing {len(tickers)} tickers: {', '.join(tickers)}")
     for ticker in tickers:
-        process_ticker(ticker, run_folder, today, watchlist_limits.get(ticker))
+        try:
+            process_ticker(ticker, run_folder, today, watchlist_limits.get(ticker))
+        except Exception as exc:  # noqa: BLE001 - keep processing the rest of the list
+            print(f"{ticker}: skipped due to unexpected error: {exc}")
 
     print("Done.")
     return 0
