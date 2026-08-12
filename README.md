@@ -25,6 +25,15 @@ process only those:
 # Process the default ticker list
 python main.py
 
+# Process the full supervision ticker list
+python main.py --stock-list SUPERVISION_LIST
+
+# Process an Aktienfinder list from the latest export in Downloads
+python main.py --stock-list Aktienfinder
+
+# Process an Aktienfinder list from a specific export file
+python main.py --stock-list Aktienfinder --xlsx "C:/path/to/export.xlsx"
+
 # Process specific tickers
 python main.py AAPL MSFT
 ```

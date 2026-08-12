@@ -28,7 +28,7 @@ SAVE_DIR = ROOT_DIR / "save"
 PICS_DIR = ROOT_DIR / "pics"
 WORKER_SCRIPT = ROOT_DIR / "_yf_worker.py"
 
-DEFAULT_TICKERS = ["AAPL", "MSFT"]
+DEFAULT_LIST = ["AAPL", "MSFT"]
 
 # Full supervision list (legacy tickers from yahoo_finance_api.py's
 # mySupervisionList). To process the full list instead of DEFAULT_TICKERS,
@@ -39,7 +39,7 @@ SUPERVISION_LIST = [
     "EVD.DE", "FEV.DE", "HAG.F", "IRBT", "JD", "MTX.DE", "N7G.DE", "PRLB",
     "SHL.DE", "SIX2.DE", "SLM", "TCOM", "TUI1.DE", "VOW3.DE",
 ]
-DEFAULT_TICKERS = SUPERVISION_LIST
+DEFAULT_TICKERS = DEFAULT_LIST
 
 # Best-effort mapping from an Aktienfinder.net "Land" (country) column to the
 # Yahoo Finance exchange suffix, used by to_yahoo_ticker(). Not guaranteed to
@@ -103,6 +103,23 @@ TICKER_COLUMN_CANDIDATES = ["symbol", "ticker", "wkn", "isin"]
 # and a hard timeout guarantees a single bad ticker can't block the rest of
 # the run.
 DOWNLOAD_TIMEOUT_SECONDS = 30
+
+
+def _normalize_stock_list_choice(value: str) -> str:
+    """Normalize user-provided --stock-list values to canonical names."""
+    normalized = value.strip().lower()
+    mapping = {
+        "default_list": "DEFAULT_LIST",
+        "default": "DEFAULT_LIST",
+        "supervision_list": "SUPERVISION_LIST",
+        "supervision": "SUPERVISION_LIST",
+        "aktienfinder": "Aktienfinder",
+    }
+    choice = mapping.get(normalized)
+    if choice is None:
+        options = "DEFAULT_LIST, SUPERVISION_LIST, Aktienfinder"
+        raise argparse.ArgumentTypeError(f"invalid stock list '{value}' (choose one of: {options})")
+    return choice
 
 
 def download_ticker_data(ticker: str, start: str, end: str, timeout: float = DOWNLOAD_TIMEOUT_SECONDS):
@@ -530,13 +547,110 @@ def process_ticker(
     print(f"{ticker}: chart saved -> {image_path.name}")
 
 
+def _ask_stock_list_gui() -> Tuple[Optional[str], Optional[str]]:
+    """Show a tkinter dialog to select the stock list source.
+
+    Returns (stock_list_choice, xlsx_path) where stock_list_choice is one of
+    'DEFAULT_LIST', 'SUPERVISION_LIST', or 'Aktienfinder', and xlsx_path is
+    an optional file path (only relevant for Aktienfinder). Both are None if
+    the user closes the window without pressing Start (cancelled).
+    """
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except ImportError:
+        print("tkinter not available - falling back to DEFAULT_LIST")
+        return "DEFAULT_LIST", None
+
+    result: dict = {"choice": None, "xlsx": None}
+
+    root = tk.Tk()
+    root.title("Stock Downloader")
+    root.resizable(False, False)
+
+    tk.Label(
+        root, text="Select ticker source:", font=("TkDefaultFont", 11, "bold"), pady=6
+    ).pack(anchor="w", padx=16)
+
+    choice_var = tk.StringVar(value="DEFAULT_LIST")
+
+    options = [
+        (f"Default List  ({', '.join(DEFAULT_LIST)})", "DEFAULT_LIST"),
+        (f"Supervision List  ({len(SUPERVISION_LIST)} tickers)", "SUPERVISION_LIST"),
+        ("Aktienfinder  (.xlsx export)", "Aktienfinder"),
+    ]
+    for label, value in options:
+        tk.Radiobutton(root, text=label, variable=choice_var, value=value, anchor="w").pack(
+            fill="x", padx=24
+        )
+
+    # --- Aktienfinder file picker (enabled only when that option is active) ---
+    xlsx_frame = tk.Frame(root)
+    xlsx_frame.pack(fill="x", padx=16, pady=(4, 2))
+    tk.Label(xlsx_frame, text="xlsx file (leave blank to auto-detect):").pack(anchor="w")
+
+    file_frame = tk.Frame(xlsx_frame)
+    file_frame.pack(fill="x")
+    xlsx_var = tk.StringVar()
+    xlsx_entry = tk.Entry(file_frame, textvariable=xlsx_var, width=44, state="disabled")
+    xlsx_entry.pack(side="left")
+
+    def _browse() -> None:
+        path = filedialog.askopenfilename(
+            title="Select Aktienfinder export",
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+        )
+        if path:
+            xlsx_var.set(path)
+
+    browse_btn = tk.Button(file_frame, text="Browse...", command=_browse, state="disabled")
+    browse_btn.pack(side="left", padx=4)
+
+    def _on_choice_change(*_args: object) -> None:
+        state = "normal" if choice_var.get() == "Aktienfinder" else "disabled"
+        xlsx_entry.config(state=state)
+        browse_btn.config(state=state)
+
+    choice_var.trace_add("write", _on_choice_change)
+
+    # --- Action buttons ---
+    btn_frame = tk.Frame(root)
+    btn_frame.pack(pady=12)
+
+    def _on_start() -> None:
+        result["choice"] = choice_var.get()
+        result["xlsx"] = xlsx_var.get().strip() or None
+        root.destroy()
+
+    def _on_cancel() -> None:
+        root.destroy()
+
+    tk.Button(btn_frame, text="Start", width=12, command=_on_start).pack(side="left", padx=8)
+    tk.Button(btn_frame, text="Cancel", width=12, command=_on_cancel).pack(side="left", padx=8)
+
+    root.mainloop()
+    return result["choice"], result["xlsx"]
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     """Parse CLI arguments: positional tickers, or --xlsx to import a watchlist."""
     parser = argparse.ArgumentParser(description="Incremental Yahoo Finance downloader")
     parser.add_argument("tickers", nargs="*", help="Ticker symbols to process")
     parser.add_argument(
+        "--stock-list",
+        type=_normalize_stock_list_choice,
+        default="DEFAULT_LIST",
+        help=(
+            "Select ticker source when no positional tickers are passed: "
+            "DEFAULT_LIST, SUPERVISION_LIST, or Aktienfinder (default: DEFAULT_LIST)"
+        ),
+    )
+    parser.add_argument(
         "--xlsx",
-        help="Path to an Aktienfinder.net-style watchlist .xlsx file to import tickers from",
+        help=(
+            "Path to an Aktienfinder.net-style watchlist .xlsx file to import tickers from "
+            "(used when --stock-list Aktienfinder is selected; also works standalone for backward compatibility)"
+        ),
     )
     parser.add_argument(
         "--sheet",
@@ -555,12 +669,36 @@ def main() -> int:
 
     args = parse_args(sys.argv[1:])
 
+    # When no CLI arguments are given, ask the user through a small GUI.
+    gui_stock_list: Optional[str] = None
+    gui_xlsx: Optional[str] = None
+    if not args.tickers and not args.xlsx and args.stock_list == "DEFAULT_LIST":
+        gui_stock_list, gui_xlsx = _ask_stock_list_gui()
+        if gui_stock_list is None:
+            print("Cancelled.")
+            return 0
+
     watchlist_limits: dict[str, Tuple[Optional[float], Optional[float]]] = {}
-    if args.xlsx:
+    # Resolve effective values: GUI overrides the argparse defaults when the GUI ran.
+    effective_stock_list = gui_stock_list if gui_stock_list is not None else args.stock_list
+    effective_xlsx = gui_xlsx if gui_stock_list is not None else args.xlsx
+
+    if args.tickers:
+        tickers = args.tickers
+    elif effective_stock_list == "Aktienfinder" or effective_xlsx:
         sheet = args.sheet
         if isinstance(sheet, str) and sheet.isdigit():
             sheet = int(sheet)
-        entries = load_watchlist_from_xlsx(args.xlsx, sheet)
+
+        xlsx_path = effective_xlsx
+        if xlsx_path is None:
+            from aktienfinder_stocklist import find_latest_export
+
+            export_path = find_latest_export()
+            xlsx_path = str(export_path)
+            print(f"Aktienfinder list selected, using latest export: {xlsx_path}")
+
+        entries = load_watchlist_from_xlsx(xlsx_path, sheet)
         tickers = [entry["ticker"] for entry in entries]
         for entry in entries:
             expected_currency = _expected_currency(entry["ticker"])
@@ -568,10 +706,10 @@ def main() -> int:
             sell = entry["sell_limit"] if entry["sell_currency"] in (None, expected_currency) else None
             if buy is not None or sell is not None:
                 watchlist_limits[entry["ticker"]] = (buy, sell)
-    elif args.tickers:
-        tickers = args.tickers
+    elif effective_stock_list == "SUPERVISION_LIST":
+        tickers = SUPERVISION_LIST
     else:
-        tickers = DEFAULT_TICKERS
+        tickers = DEFAULT_LIST
 
     print(f"Processing {len(tickers)} tickers: {', '.join(tickers)}")
     for ticker in tickers:
